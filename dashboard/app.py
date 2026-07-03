@@ -76,6 +76,115 @@ def apply_chart_layout(fig, left_margin: int = 40, bottom_margin: int = 80):
     return fig
 
 
+def has_final_tables() -> bool:
+    return DB_PATH.exists() or all(path.exists() for path in CSV_TABLES.values())
+
+
+def demo_tables() -> dict[str, pd.DataFrame]:
+    empresas = pd.DataFrame(
+        [
+            {
+                "cnpj_basico": "00000001",
+                "cnpj_ordem": "0001",
+                "cnpj_dv": "01",
+                "cnpj_completo": "00000001000101",
+                "razao_social": "ALFA SOLUCOES LTDA",
+                "nome_fantasia": "ALFA TESTE",
+                "situacao_cadastral": "02",
+                "data_inicio_atividade": "2018-01-15",
+                "idade_empresa_anos": 8,
+                "uf": "SC",
+                "codigo_municipio_receita": "8105",
+                "municipio": "FLORIANOPOLIS",
+                "cnae_fiscal_principal": "6201501",
+                "cnae_principal": "6201501",
+                "descricao_cnae": "DESENVOLVIMENTO DE PROGRAMAS DE COMPUTADOR SOB ENCOMENDA",
+                "natureza_juridica": "2062",
+                "descricao_natureza_juridica": "SOCIEDADE EMPRESARIA LIMITADA",
+                "porte_empresa": "Microempresa",
+                "capital_social": 150000.0,
+                "opcao_simples": "S",
+                "opcao_mei": "N",
+                "populacao": 537211,
+                "pib_per_capita": 74500.10,
+            },
+            {
+                "cnpj_basico": "00000002",
+                "cnpj_ordem": "0001",
+                "cnpj_dv": "02",
+                "cnpj_completo": "00000002000102",
+                "razao_social": "BETA COMERCIO LTDA",
+                "nome_fantasia": "BETA TESTE",
+                "situacao_cadastral": "02",
+                "data_inicio_atividade": "2019-05-20",
+                "idade_empresa_anos": 7,
+                "uf": "SC",
+                "codigo_municipio_receita": "8047",
+                "municipio": "JOINVILLE",
+                "cnae_fiscal_principal": "4711302",
+                "cnae_principal": "4711302",
+                "descricao_cnae": "COMERCIO VAREJISTA DE MERCADORIAS EM GERAL",
+                "natureza_juridica": "2062",
+                "descricao_natureza_juridica": "SOCIEDADE EMPRESARIA LIMITADA",
+                "porte_empresa": "Empresa de pequeno porte",
+                "capital_social": 90000.0,
+                "opcao_simples": "S",
+                "opcao_mei": "S",
+                "populacao": 616323,
+                "pib_per_capita": 68000.30,
+            },
+        ]
+    )
+    municipio_cnae = (
+        empresas.groupby(["uf", "municipio", "cnae_principal", "descricao_cnae"], dropna=False)
+        .agg(
+            total_empresas_ativas=("cnpj_completo", "count"),
+            capital_social_total=("capital_social", "sum"),
+            capital_social_mediano=("capital_social", "median"),
+            idade_media_empresas=("idade_empresa_anos", "mean"),
+            idade_mediana_empresas=("idade_empresa_anos", "median"),
+            populacao=("populacao", "max"),
+        )
+        .reset_index()
+    )
+    municipio_cnae["participacao_cnae_no_municipio"] = 1.0
+    municipio_cnae["empresas_por_10k_habitantes"] = municipio_cnae["total_empresas_ativas"] * 10000 / municipio_cnae["populacao"]
+
+    ranking_municipios = (
+        empresas.groupby("municipio", dropna=False)
+        .agg(
+            populacao=("populacao", "max"),
+            pib_per_capita=("pib_per_capita", "max"),
+            total_empresas_ativas=("cnpj_completo", "count"),
+            total_cnaes_distintos=("cnae_principal", "nunique"),
+            capital_social_total=("capital_social", "sum"),
+        )
+        .reset_index()
+    )
+    ranking_municipios["empresas_por_10k_habitantes"] = ranking_municipios["total_empresas_ativas"] * 10000 / ranking_municipios["populacao"]
+    ranking_municipios["score_oportunidade"] = [100.0, 82.0]
+    ranking_municipios["posicao_ranking"] = [1, 2]
+
+    ranking_cnaes = (
+        empresas.groupby(["cnae_principal", "descricao_cnae"], dropna=False)
+        .agg(
+            total_empresas_ativas=("cnpj_completo", "count"),
+            total_municipios_com_presenca=("municipio", "nunique"),
+            capital_social_total=("capital_social", "sum"),
+            idade_media_empresas=("idade_empresa_anos", "mean"),
+        )
+        .reset_index()
+    )
+    ranking_cnaes["score_relevancia"] = [100.0, 80.0]
+
+    return {
+        "gold_empresas_ativas_sc": empresas,
+        "gold_ranking_municipios_sc": ranking_municipios,
+        "gold_ranking_cnaes_sc": ranking_cnaes,
+        "gold_municipio_cnae_sc": municipio_cnae,
+    }
+
+
 @st.cache_data(show_spinner=False)
 def load_table(table: str):
     if DB_PATH.exists():
@@ -84,7 +193,7 @@ def load_table(table: str):
     csv_path = CSV_TABLES[table]
     if csv_path.exists():
         return pd.read_csv(csv_path)
-    raise FileNotFoundError(f"Tabela {table} nao encontrada em data/gold nem em outputs.")
+    return demo_tables()[table]
 
 
 st.set_page_config(page_title="Inteligencia B2B SC", layout="wide")
@@ -180,11 +289,13 @@ if METRICS_PATH.exists():
     if "sintetico" in metrics_text:
         st.warning("Base carregada gerada a partir da amostra sintetica de teste. Substitua `data/raw` pelos arquivos reais e rode o pipeline para uso analitico.")
 
-if not DB_PATH.exists() and not all(path.exists() for path in CSV_TABLES.values()):
-    st.warning("Tabelas finais ainda nao encontradas. Rode `python -m src.pipeline` antes de abrir o dashboard.")
-    st.stop()
-
-if not DB_PATH.exists():
+if not has_final_tables():
+    st.warning(
+        "Base final completa nao esta disponivel neste ambiente. "
+        "Exibindo uma amostra sintetica pequena para demonstracao do dashboard. "
+        "Para analise real, gere `data/gold` localmente com o pipeline."
+    )
+elif not DB_PATH.exists():
     st.info("Carregando CSVs finais de `outputs`, sem acesso aos arquivos brutos.")
 
 empresas = load_table("gold_empresas_ativas_sc")
